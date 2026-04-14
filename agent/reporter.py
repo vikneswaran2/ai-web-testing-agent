@@ -27,12 +27,15 @@ class Reporter:
         from fpdf import FPDF
         import os
 
+        # Ensure output directory exists even if called standalone
+        os.makedirs("tests", exist_ok=True)
+
         pdf = FPDF()
         pdf.add_page()
-        
+
         # --- HEADER ---
         pdf.set_font("Helvetica", "B", 20)
-        pdf.set_text_color(30, 41, 59) # Slate 800
+        pdf.set_text_color(30, 41, 59)  # Slate 800
         pdf.cell(0, 15, "AI WEB TESTING AGENT", ln=True, align="C")
         pdf.set_font("Helvetica", "I", 10)
         pdf.cell(0, 5, "TESTING SUMMARY REPORT", ln=True, align="C")
@@ -46,7 +49,7 @@ class Reporter:
         pdf.cell(40, 10, "Test ID:")
         pdf.set_font("Helvetica", "", 12)
         pdf.cell(0, 10, uid, ln=True)
-        
+
         pdf.set_font("Helvetica", "B", 12)
         pdf.set_x(15)
         pdf.cell(40, 10, "Date & Time:")
@@ -55,7 +58,7 @@ class Reporter:
 
         status_text = "SUCCESS" if report_data["success"] else "ISSUE FOUND"
         status_color = (16, 185, 129) if report_data["success"] else (239, 68, 68)
-        
+
         pdf.set_font("Helvetica", "B", 12)
         pdf.set_x(15)
         pdf.cell(40, 10, "Outcome:")
@@ -70,12 +73,12 @@ class Reporter:
         pdf.cell(0, 10, "Step Details", ln=True)
         pdf.set_font("Courier", "", 9)
         pdf.set_fill_color(241, 245, 249)
-        
+
         for log in report_data["logs"]:
             clean_log = log.encode('latin-1', 'replace').decode('latin-1')
             pdf.multi_cell(0, 5, f"> {clean_log}", border=0, fill=True)
             pdf.ln(1)
-        
+
         pdf.ln(10)
 
         # --- SCREENSHOTS ---
@@ -87,9 +90,9 @@ class Reporter:
                     try:
                         pdf.image(sc, w=170)
                         pdf.ln(5)
-                    except:
+                    except Exception as img_err:
                         pdf.set_font("Helvetica", "I", 10)
-                        pdf.cell(0, 10, f"[Image load error: {sc}]", ln=True)
+                        pdf.cell(0, 10, f"[Image load error: {sc} — {img_err}]", ln=True)
 
         # --- FOOTER ---
         pdf.set_y(-20)
@@ -104,9 +107,18 @@ class Reporter:
     def generate_report(self, exec_result, test_id=None):
         import uuid
         import os
-        
+
         uid = test_id or str(uuid.uuid4())[:8]
-        
+
+        # Guard against None or malformed exec_result
+        if not exec_result or not isinstance(exec_result, dict):
+            exec_result = {"success": False, "logs": ["exec_result was None or invalid"], "screenshots": []}
+
+        # Ensure required keys exist
+        exec_result.setdefault("success", False)
+        exec_result.setdefault("logs", [])
+        exec_result.setdefault("screenshots", [])
+
         report = {
             "timestamp": str(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
             "success": exec_result["success"],
@@ -122,7 +134,7 @@ class Reporter:
         with open(json_report_path, "wb") as f:
             f.write(json.dumps(report, indent=4).encode("utf-8", errors="replace"))
 
-        # render HTML report
+        # Render HTML report
         html_template = """
         <html>
         <head>
@@ -168,8 +180,8 @@ class Reporter:
         try:
             with open(html_report_path, "wb") as f:
                 f.write(html.encode("utf-8", errors="replace"))
-        except:
-            pass 
+        except Exception as html_err:
+            print(f"HTML Report Write Failed: {html_err}")
 
         try:
             pdf_path = self.generate_pdf_report(report, uid)

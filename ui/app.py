@@ -1,9 +1,14 @@
 import sys
 import os
-import asyncio
 
+# asyncio.WindowsProactorEventLoopPolicy is deprecated in Python 3.14+
+# Only set if running Python < 3.14 to avoid deprecation warnings
+import asyncio
 if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    import platform
+    major, minor = map(int, platform.python_version_tuple()[:2])
+    if major == 3 and minor < 14:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,7 +32,6 @@ st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;600;800&family=JetBrains+Mono&display=swap');
     
-    /* Vibrant Futuristic Background */
     .stApp {
         background: #0f172a;
         background-image: 
@@ -46,14 +50,12 @@ st.markdown("""
         z-index: 0;
     }
 
-    /* Premium Typography */
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
         color: #f8fafc;
         letter-spacing: -0.01em;
     }
 
-    /* Tactical Header */
     .neon-title {
         font-family: 'Orbitron', sans-serif;
         font-weight: 900;
@@ -68,7 +70,6 @@ st.markdown("""
         padding-top: 10px;
     }
 
-    /* Tactical Display Modules (Brightened Glass) */
     .glass-card {
         background: rgba(30, 41, 59, 0.7);
         backdrop-filter: blur(20px);
@@ -96,7 +97,6 @@ st.markdown("""
         opacity: 0.6;
     }
 
-    /* Luminous Cyber Buttons */
     .stButton button {
         background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%) !important;
         color: #fff !important;
@@ -118,7 +118,6 @@ st.markdown("""
         background: linear-gradient(90deg, #818cf8 0%, #c084fc 100%) !important;
     }
 
-    /* Navigation Tabs Restructured */
     .stButton button[kind="secondary"] {
         background: rgba(255, 255, 255, 0.05) !important;
         border: 1px solid rgba(255,255,255,0.1) !important;
@@ -129,7 +128,6 @@ st.markdown("""
         background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%) !important;
     }
 
-    /* Input Fields */
     .stTextArea textarea {
         background: rgba(15, 23, 42, 0.5) !important;
         border: 1px solid rgba(99, 102, 241, 0.3) !important;
@@ -139,7 +137,6 @@ st.markdown("""
         font-size: 1rem !important;
     }
 
-    /* Hide standard UI elements */
     [data-testid="stHeader"] { visibility: hidden; pointer-events: none; }
     [data-testid="stSidebar"] { display: none; }
     [data-testid="collapsedControl"] { display: none; }
@@ -147,7 +144,6 @@ st.markdown("""
     footer { visibility: hidden; }
     .stDeployButton { display: none; }
     
-    /* Scrollbar */
     ::-webkit-scrollbar { width: 8px; }
     ::-webkit-scrollbar-track { background: #020617; }
     ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
@@ -173,7 +169,7 @@ with header_col2:
 
 st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
-# Custom Navigation (Replaces st.tabs for programmatic control)
+# Custom Navigation
 nav_col1, nav_col2, _ = st.columns([1, 1, 3])
 with nav_col1:
     if st.button("🚀 START TESTING", use_container_width=True, type="primary" if st.session_state.active_tab == "start" else "secondary"):
@@ -192,26 +188,25 @@ if st.session_state.active_tab == "start":
         <h3 style="margin-top:0; font-family:'Orbitron', sans-serif; font-size:1.2rem; color:#6366f1; margin-bottom:0;">ENTER YOUR INSTRUCTIONS BELOW</h3>
     </div>
     """, unsafe_allow_html=True)
-    
+
     instructions = st.text_area(
-        "Enter your steps", 
+        "Enter your steps",
         height=180,
         placeholder="Go to https://google.com then search for 'AI Testing'\\nClick the first result\\nVerify the page loaded",
         value=st.session_state.get("draft_instructions", ""),
         label_visibility="collapsed"
     )
-    
-    # Advanced Settings Expander
+
     with st.expander("⚙️ ADVANCED SETTINGS", expanded=False):
         col_set1, col_set2 = st.columns(2)
-        
+
         with col_set1:
             use_ai_parsing = st.checkbox(
-                "🤖 AI-Powered Parsing", 
+                "🤖 AI-Powered Parsing",
                 value=True,
                 help="Use Grok AI to understand complex instructions. Fallback to pattern matching if disabled."
             )
-            
+
             custom_timeout = st.number_input(
                 "Timeout (ms)",
                 min_value=1000,
@@ -220,14 +215,14 @@ if st.session_state.active_tab == "start":
                 step=1000,
                 help="Maximum time to wait for actions to complete"
             )
-        
+
         with col_set2:
             screenshot_each_step = st.checkbox(
                 "📸 Screenshot Each Step",
                 value=False,
                 help="Capture screenshot after every action (increases execution time)"
             )
-            
+
             max_retries = st.number_input(
                 "Max Retries",
                 min_value=0,
@@ -235,69 +230,61 @@ if st.session_state.active_tab == "start":
                 value=3,
                 help="Number of retry attempts for failed actions"
             )
-    
+
     col_btn, _ = st.columns([1, 2])
     with col_btn:
         run_btn = st.button("🚀 RUN NOW")
 
     if run_btn:
-        # Combine all lines into a single instruction with 'then' separator
-        # This allows multi-line input while treating it as one test flow
         lines = [line.strip() for line in instructions.split("\n") if line.strip()]
         combined_instruction = " then ".join(lines)
         tests = [combined_instruction] if combined_instruction else []
-        
+
         if not tests:
             st.warning("Please enter at least one step.")
         else:
             with st.status("🤖 INITIALIZING AI AGENT...", expanded=True) as status:
                 st.write("📖 Parsing instructions with " + ("AI-powered understanding" if use_ai_parsing else "pattern matching") + "...")
-                graph = build_batch_graph()
-                app = graph.compile()
-                
+
+                app = build_batch_graph()
+
                 st.write("🏃 Executing tests with enhanced capabilities...")
-                
-                # Enhanced settings
+
                 settings = {
                     "headless": headless,
                     "timeout": custom_timeout
                 }
-                
-                # Import config to set runtime options
+
                 try:
                     from agent.config import Config
                     Config.SCREENSHOT_EACH_STEP = screenshot_each_step
                     Config.MAX_RETRIES = max_retries
-                except:
-                    pass
-                
+                except Exception as config_err:
+                    st.warning(f"Config not applied: {config_err}")
+
                 result = app.invoke({
                     "instructions": tests,
                     "settings": settings,
                     "use_ai_parsing": use_ai_parsing
                 })
-                
+
                 status.update(label="🎉 ALL TESTS COMPLETED!", state="complete", expanded=False)
 
             st.session_state.last_result = result
-            st.session_state.active_tab = "results" # REDIRECT TO RESULTS
+            st.session_state.active_tab = "results"
             st.rerun()
 
 elif st.session_state.active_tab == "results":
     if "last_result" in st.session_state:
         reports = st.session_state.last_result.get("reports", [])
         exec_results = st.session_state.last_result.get("exec_results", [])
-        
-        # --- SUMMARY DASHBOARD ---
+
         total_tests = len(exec_results)
-        
-        # Calculate total steps (actions) across all tests
         parsed_sets = st.session_state.last_result.get("parsed_sets", [])
         total_steps = sum(len(actions) for actions in parsed_sets)
-        
         success_count = sum(1 for r in exec_results if r.get("success", False))
         failed_count = total_tests - success_count
-        
+
         st.markdown(f"""
         <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px;">
             <div class="glass-card" style="text-align: center; border-left: 4px solid #6366f1;">
@@ -318,16 +305,15 @@ elif st.session_state.active_tab == "results":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
+
         for i, (rep, exec_res) in enumerate(zip(reports, exec_results)):
             success = exec_res.get("success", False)
             logs = exec_res.get("logs", [])
             screenshots = exec_res.get("screenshots", [])
             video_path = exec_res.get("video")
             html_report_path = rep['html_report']
-            
+
             with st.container():
-                # HEADER CARD
                 st.markdown(f"""
                 <div style="background: rgba(255,255,255,0.03); border-left: 5px solid {'#10b981' if success else '#ef4444'}; padding: 20px; border-radius: 12px; margin-bottom: 20px; backdrop-filter: blur(10px);">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -338,10 +324,9 @@ elif st.session_state.active_tab == "results":
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                # MAIN CONTENT COLUMNS
+
                 col_left, col_right = st.columns([1.2, 1], gap="medium")
-                
+
                 with col_left:
                     st.markdown("<h4 style='font-family:Orbitron; font-size:0.9rem; color:#6366f1; margin-bottom:15px;'>📋 PROCESS DETAILS</h4>", unsafe_allow_html=True)
                     with st.expander("SEE STEP-BY-STEP LOGS", expanded=not success):
@@ -354,10 +339,9 @@ elif st.session_state.active_tab == "results":
                                 st.warning(log)
                             else:
                                 st.info(log)
-                    
+
                     st.markdown("<div style='height:15px;'></div>", unsafe_allow_html=True)
-                    
-                    # ACTION BUTTONS
+
                     btn_col1, btn_col2 = st.columns([1, 1])
                     with btn_col1:
                         if os.path.exists(html_report_path):
@@ -370,7 +354,7 @@ elif st.session_state.active_tab == "results":
                                     key=f"dl_html_{i}",
                                     use_container_width=True
                                 )
-                    
+
                     with btn_col2:
                         pdf_path = rep.get("pdf_report")
                         if pdf_path and os.path.exists(pdf_path):
@@ -383,42 +367,44 @@ elif st.session_state.active_tab == "results":
                                     key=f"dl_pdf_{i}",
                                     use_container_width=True
                                 )
-                    
-                    # INTEGRATED HTML VIEWER (ALWAYS SHOWN)
+
                     st.markdown("<div style='height:15px;'></div>", unsafe_allow_html=True)
                     if os.path.exists(html_report_path):
                         with open(html_report_path, "r", encoding="utf-8") as f:
                             html_content = f.read()
-                        st.components.v1.html(html_content, height=500, scrolling=True)
+                        # st.components.v1.html replaced with st.iframe as per Streamlit deprecation
+                        st.iframe(html_content, height=500, scrolling=True)
                     else:
                         st.error("Extended report file missing.")
 
                 with col_right:
                     st.markdown("<h4 style='font-family:Orbitron; font-size:0.9rem; color:#6366f1; margin-bottom:15px;'>🖼️ VISUAL EVIDENCE</h4>", unsafe_allow_html=True)
-                    
+
                     if screenshots:
-                        cols_sc = st.columns(len(screenshots) if len(screenshots) < 3 else 3)
-                        for idx, sc in enumerate(screenshots):
-                            if idx < 3:
-                                with cols_sc[idx % len(cols_sc)]:
-                                    if os.path.exists(sc):
-                                        # Read image bytes to ensure display works regardless of path issues
-                                        try:
-                                            with open(sc, "rb") as f:
-                                                image_bytes = f.read()
-                                            st.image(image_bytes, use_container_width=True, caption=f"Capture {idx+1}")
-                                        except Exception as e:
-                                            st.error(f"Error loading image: {e}")
-                                    else:
-                                        st.warning(f"Image not found: {sc}")
-                    
+                        display_screenshots = screenshots[:3]
+                        if len(screenshots) > 3:
+                            st.caption(f"Showing 3 of {len(screenshots)} screenshots.")
+                        cols_sc = st.columns(len(display_screenshots))
+                        for idx, sc in enumerate(display_screenshots):
+                            with cols_sc[idx]:
+                                if os.path.exists(sc):
+                                    try:
+                                        with open(sc, "rb") as f:
+                                            image_bytes = f.read()
+                                        # use_container_width replaced with width='stretch'
+                                        st.image(image_bytes, width='stretch', caption=f"Capture {idx+1}")
+                                    except Exception as e:
+                                        st.error(f"Error loading image: {e}")
+                                else:
+                                    st.warning(f"Image not found: {sc}")
+
                     if video_path and os.path.exists(video_path):
                         st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
                         st.markdown("<p style='font-size:0.8rem; color:#94a3b8; font-family:Orbitron;'>VIDEO RECORDING</p>", unsafe_allow_html=True)
                         st.video(video_path)
                     elif not screenshots:
                         st.info("No visual data collected for this test.")
-                
+
                 st.markdown("<div style='height:60px; border-bottom: 1px solid rgba(255,255,255,0.05); margin-bottom:40px;'></div>", unsafe_allow_html=True)
     else:
         st.markdown("""

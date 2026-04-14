@@ -1,0 +1,20 @@
+{
+  "8762a9c0ed432b57d05eae8e0f252710": {
+    "failed_selector": "input[placeholder*='Search'], input[name='q'], input[type='search']",
+    "healed_selector": "#APjFqb",
+    "action_hint": "type 'ai testing tools' into input[placeholder*='Search'], input[name='q'], input[type='search']",
+    "method": "AI",
+    "timestamp": "2026-03-29T17:24:01.959325",
+    "hits": 0,
+    "url_pattern": "www.google.com"
+  },
+  "b01b88cb5c866eb2c70b26e547786cc8": {
+    "failed_selector": "*:has-text('12345')",
+    "healed_selector": "input",
+    "action_hint": "type '12345' into *:has-text('12345')",
+    "method": "AI",
+    "timestamp": "2026-03-29T17:28:33.735225",
+    "hits": 3,
+    "url_pattern": "the-internet.herokuapp.com"
+  }
+}

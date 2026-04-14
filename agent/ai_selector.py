@@ -1,8 +1,11 @@
 # agent/ai_selector.py
 
+import logging
 import os
+import re
+from typing import Optional
+
 import requests
-from typing import Optional, Tuple
 from bs4 import BeautifulSoup
 
 try:
@@ -13,72 +16,108 @@ except ImportError:
 
 from .selector_cache import SelectorCache
 
-# Load from environment for safety
-GROK_API_KEY = os.getenv("GROK_API_KEY")
+logger = logging.getLogger(__name__)
+
 GROK_URL = "https://api.x.ai/v1/chat/completions"
+
+# Basic sanity-check pattern: must start with a CSS-valid character
+_VALID_SELECTOR_RE = re.compile(r'^[#.\[\w:*]')
+
 
 class AISelectorHealer:
     """
-    Enhanced AI-powered selector healing with caching, better context,
-    and multiple healing strategies.
+    AI-powered selector healing with caching, semantic fallback,
+    and selector validation.
     """
-    
+
     def __init__(self, use_cache: bool = True):
         self.cache = SelectorCache() if use_cache else None
         self.healing_history = []
-    
-    def heal(self, html_content: str, failed_selector: str, action_hint: str, 
-             page_url: str = "", page_title: str = "") -> Optional[str]:
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def heal(
+        self,
+        html_content: str,
+        failed_selector: str,
+        action_hint: str,
+        page_url: str = "",
+        page_title: str = "",
+    ) -> Optional[str]:
         """
-        Use Grok AI to analyze the DOM and suggest the correct selector.
-        Now with caching and enhanced context.
+        Attempt to find a working replacement for *failed_selector*.
+
+        Returns the healed selector on success, or None if every strategy
+        failed (callers can then decide whether to fall back to the original
+        or raise an error).
         """
-        if not GROK_API_KEY:
-            print("⚠️ AI Healer Warning: GROK_API_KEY not found in environment. Fallback to original selector.")
-            return failed_selector
-        
-        # Check cache first
+        # Lazy API key check — supports load_dotenv called after import
+        api_key = os.getenv("GROK_API_KEY")
+        if not api_key:
+            logger.warning("GROK_API_KEY not set — skipping AI healing.")
+            return None
+
+        # Cache hit
         if self.cache:
-            cached_selector = self.cache.get(page_url, failed_selector, action_hint)
-            if cached_selector:
-                print(f"✓ Using cached selector: {cached_selector}")
-                return cached_selector
-        
-        # Try multiple healing strategies
-        healed_selector = None
-        
-        # Strategy 1: AI with enhanced context
-        healed_selector = self._heal_with_ai_enhanced(
-            html_content, failed_selector, action_hint, page_url, page_title
+            cached = self.cache.get(page_url, failed_selector, action_hint)
+            if cached:
+                logger.debug("Cache hit: %s", cached)
+                self._record(failed_selector, cached, action_hint, success=True)
+                return cached
+
+        healed: Optional[str] = None
+
+        # Strategy 1 — AI with enriched context
+        healed = self._heal_with_ai_enhanced(
+            html_content, failed_selector, action_hint, page_url, page_title, api_key
         )
-        
-        # Strategy 2: If AI fails, try semantic analysis
-        if not healed_selector or healed_selector == failed_selector:
-            healed_selector = self._heal_with_semantic_analysis(
+
+        # Strategy 2 — lightweight semantic analysis (no API call)
+        if not healed:
+            healed = self._heal_with_semantic_analysis(
                 html_content, failed_selector, action_hint
             )
-        
-        # Cache successful healing
-        if healed_selector and healed_selector != failed_selector and self.cache:
-            self.cache.set(page_url, failed_selector, action_hint, healed_selector, "AI")
-        
-        # Track healing history
-        self.healing_history.append({
-            'failed': failed_selector,
-            'healed': healed_selector,
-            'action': action_hint,
-            'success': healed_selector != failed_selector
-        })
-        
-        return healed_selector or failed_selector
-    
-    def _heal_with_ai_enhanced(self, html_content: str, failed_selector: str, 
-                               action_hint: str, page_url: str, page_title: str) -> Optional[str]:
-        """Enhanced AI healing with better context"""
-        
-        # Extract relevant HTML snippet (focus on interactive elements)
+
+        success = bool(healed and healed != failed_selector)
+
+        if success and self.cache:
+            self.cache.set(
+                page_url, failed_selector, action_hint, healed, "AI"
+            )
+
+        self._record(failed_selector, healed, action_hint, success=success)
+        return healed if success else None
+
+    def get_healing_stats(self) -> dict:
+        """Return cumulative healing statistics."""
+        total = len(self.healing_history)
+        if total == 0:
+            return {"total": 0, "success_rate": 0}
+        successful = sum(1 for h in self.healing_history if h["success"])
+        return {
+            "total_healings": total,
+            "successful": successful,
+            "success_rate": round((successful / total) * 100, 1),
+            "cache_stats": self.cache.get_stats() if self.cache else None,
+        }
+
+    # ------------------------------------------------------------------
+    # Strategy 1 — AI healing
+    # ------------------------------------------------------------------
+
+    def _heal_with_ai_enhanced(
+        self,
+        html_content: str,
+        failed_selector: str,
+        action_hint: str,
+        page_url: str,
+        page_title: str,
+        api_key: str,
+    ) -> Optional[str]:
         relevant_html = self._extract_relevant_html(html_content, action_hint)
-        
+
         prompt = f"""You are an expert CSS selector generator for web automation.
 
 CONTEXT:
@@ -87,26 +126,25 @@ CONTEXT:
 - Failed Selector: {failed_selector}
 - Intended Action: {action_hint}
 
-HTML SNIPPET (Interactive elements only):
+HTML SNIPPET (interactive elements only):
 {relevant_html[:8000]}
 
 TASK:
-Analyze the HTML and generate the MOST STABLE CSS selector for the element that matches the intended action.
+Generate the MOST STABLE CSS selector for the element that matches the intended action.
 
 SELECTOR PRIORITY (use in this order):
-1. ID attributes (e.g., #submit-button)
-2. Unique data attributes (e.g., [data-testid="login"])
-3. Unique name attributes (e.g., input[name="email"])
-4. Unique class combinations (e.g., .btn.btn-primary.submit)
-5. Text-based selectors (e.g., button:has-text("Login"))
-6. Structural selectors (e.g., form > button[type="submit"])
+1. ID attributes — #submit-button
+2. Unique data-* attributes — [data-testid="login"]
+3. Unique name attributes — input[name="email"]
+4. Unique class combinations — .btn.btn-primary
+5. Text-based — button:has-text("Login")
+6. Structural — form > button[type="submit"]
 
 RULES:
-- Return ONLY the selector, no explanations
-- Prefer shorter, more stable selectors
-- Avoid nth-child unless necessary
-- Use :has-text() for buttons/links when appropriate
-- Ensure selector is specific enough to match only one element
+- Return ONLY the selector, no explanation, no markdown.
+- Prefer shorter, more stable selectors.
+- Avoid nth-child unless nothing else works.
+- Selector must match exactly one element.
 
 SELECTOR:"""
 
@@ -114,159 +152,184 @@ SELECTOR:"""
             response = requests.post(
                 GROK_URL,
                 headers={
-                    "Authorization": f"Bearer {GROK_API_KEY}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
                 },
                 json={
                     "model": "grok-beta",
                     "messages": [
-                        {"role": "system", "content": "You are a CSS selector expert. Return only the selector, nothing else."},
-                        {"role": "user", "content": prompt}
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a CSS selector expert. "
+                                "Return only the raw selector string, nothing else."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
                     ],
-                    "temperature": 0.1
+                    "temperature": 0.1,
                 },
-                timeout=15
+                timeout=15,
             )
+            response.raise_for_status()
+            raw = response.json()["choices"][0]["message"]["content"].strip()
+            selector = self._clean_selector(raw)
 
-            result = response.json()
-            selector = result["choices"][0]["message"]["content"].strip()
-            
-            # Clean up any AI chatter or markdown
-            selector = self._clean_selector(selector)
-            
+            if not self._is_valid_selector(selector):
+                logger.warning("AI returned an invalid-looking selector: %r", selector)
+                return None
+
             return selector
-            
-        except Exception as e:
-            print(f"AI Healing Error: {e}")
-            return None
-    
-    def _heal_with_semantic_analysis(self, html_content: str, failed_selector: str, 
-                                     action_hint: str) -> Optional[str]:
-        """Fallback: Use semantic analysis to find elements"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Determine element type from action hint
-            if "click" in action_hint.lower():
-                # Look for buttons, links
-                candidates = soup.find_all(['button', 'a', 'input'])
-            elif "type" in action_hint.lower() or "fill" in action_hint.lower():
-                # Look for inputs, textareas
-                candidates = soup.find_all(['input', 'textarea'])
-            elif "select" in action_hint.lower():
-                candidates = soup.find_all('select')
-            else:
-                candidates = soup.find_all(['button', 'a', 'input', 'textarea', 'select'])
-            
-            # Score candidates based on attributes
-            best_candidate = None
-            best_score = 0
-            
-            for element in candidates[:20]:  # Limit to first 20 to avoid slowdown
-                score = 0
-                
-                # Prefer elements with IDs
-                if element.get('id'):
-                    score += 10
-                    selector = f"#{element.get('id')}"
-                
-                # Check for data attributes
-                elif any(attr.startswith('data-') for attr in element.attrs):
-                    score += 8
-                    data_attr = [attr for attr in element.attrs if attr.startswith('data-')][0]
-                    selector = f"[{data_attr}='{element.get(data_attr)}']"
-                
-                # Check for name attribute
-                elif element.get('name'):
-                    score += 7
-                    selector = f"{element.name}[name='{element.get('name')}']"
-                
-                # Check for unique class
-                elif element.get('class'):
-                    score += 5
-                    classes = '.'.join(element.get('class')[:2])  # Use first 2 classes
-                    selector = f"{element.name}.{classes}"
-                
-                # Text-based for buttons/links
-                elif element.name in ['button', 'a'] and element.get_text(strip=True):
-                    score += 6
-                    text = element.get_text(strip=True)[:30]
-                    selector = f"{element.name}:has-text('{text}')"
-                
-                else:
-                    selector = element.name
-                    score += 1
-                
-                if score > best_score:
-                    best_score = score
-                    best_candidate = selector
-            
-            return best_candidate
-            
-        except Exception as e:
-            print(f"Semantic analysis error: {e}")
-            return None
-    
-    def _extract_relevant_html(self, html_content: str, action_hint: str) -> str:
-        """Extract only relevant HTML to reduce token usage"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Remove script and style tags
-            for tag in soup(['script', 'style', 'noscript']):
-                tag.decompose()
-            
-            # Focus on interactive elements
-            interactive_tags = ['button', 'a', 'input', 'textarea', 'select', 'form']
-            relevant_elements = soup.find_all(interactive_tags)
-            
-            # Build simplified HTML with context
-            simplified = []
-            for elem in relevant_elements[:50]:  # Limit to 50 elements
-                # Include parent for context
-                parent = elem.parent
-                if parent:
-                    simplified.append(str(parent)[:500])  # Limit each element
-            
-            return '\n'.join(simplified)
-            
-        except Exception as e:
-            print(f"HTML extraction error: {e}")
-            return html_content[:10000]
-    
-    def _clean_selector(self, selector: str) -> str:
-        """Clean up AI-generated selector"""
-        # Remove markdown code blocks
-        if "```" in selector:
-            parts = selector.split("```")
-            for part in parts:
-                if part.strip() and not part.strip().startswith('css'):
-                    selector = part.strip()
-                    break
-        
-        # Remove quotes if wrapped
-        selector = selector.strip('"\'')
-        
-        # Remove any explanatory text (take first line only)
-        selector = selector.split('\n')[0].strip()
-        
-        # Normalize quotes
-        selector = selector.replace('"', "'")
-        
-        return selector
-    
-    def get_healing_stats(self) -> dict:
-        """Get statistics about healing performance"""
-        total = len(self.healing_history)
-        if total == 0:
-            return {'total': 0, 'success_rate': 0}
-        
-        successful = sum(1 for h in self.healing_history if h['success'])
-        
-        return {
-            'total_healings': total,
-            'successful': successful,
-            'success_rate': (successful / total) * 100,
-            'cache_stats': self.cache.get_stats() if self.cache else None
-        }
 
+        except requests.exceptions.Timeout:
+            logger.warning("AI healing timed out after 15s for selector: %r", failed_selector)
+            return None
+        except Exception:
+            logger.exception("AI healing error")
+            return None
+
+    # ------------------------------------------------------------------
+    # Strategy 2 — Semantic analysis (BeautifulSoup, no API)
+    # ------------------------------------------------------------------
+
+    def _heal_with_semantic_analysis(
+        self, html_content: str, failed_selector: str, action_hint: str
+    ) -> Optional[str]:
+        try:
+            soup = BeautifulSoup(html_content, "html.parser")
+            hint = action_hint.lower()
+
+            if "click" in hint:
+                tag_filter = ["button", "a", "input"]
+            elif "type" in hint or "fill" in hint:
+                tag_filter = ["input", "textarea"]
+            elif "select" in hint:
+                tag_filter = ["select"]
+            else:
+                tag_filter = ["button", "a", "input", "textarea", "select"]
+
+            candidates = soup.find_all(tag_filter)
+
+            best_selector: Optional[str] = None
+            best_score = -1
+
+            for element in candidates[:20]:
+                score, selector = self._score_element(element, hint)
+                if selector and score > best_score:
+                    best_score = score
+                    best_selector = selector
+
+            return best_selector
+
+        except Exception:
+            logger.exception("Semantic analysis error")
+            return None
+
+    def _score_element(self, element, action_hint: str = "") -> tuple:
+        """Return (score, selector) for a BeautifulSoup element.
+        Boosts score when element text/id/name matches keywords in action_hint.
+        """
+        hint_words = set(action_hint.lower().split())
+        element_text = element.get_text(strip=True).lower()
+        element_id = (element.get("id") or "").lower()
+        element_name = (element.get("name") or "").lower()
+
+        # Keyword relevance bonus — boosts elements that match the action hint
+        relevance = 0
+        for word in hint_words:
+            if len(word) > 3:  # skip short words like "the", "click"
+                if word in element_text or word in element_id or word in element_name:
+                    relevance += 3
+
+        if element.get("id"):
+            return 10 + relevance, f"#{element['id']}"
+
+        data_attrs = [a for a in element.attrs if a.startswith("data-")]
+        if data_attrs:
+            attr = data_attrs[0]
+            return 8 + relevance, f"[{attr}='{element[attr]}']"
+
+        if element.get("name"):
+            return 7 + relevance, f"{element.name}[name='{element['name']}']"
+
+        text = element.get_text(strip=True)
+        if element.name in ("button", "a") and text:
+            return 6 + relevance, f"{element.name}:has-text('{text[:30]}')"
+
+        classes = element.get("class")
+        if classes:
+            cls = ".".join(classes[:2])
+            return 5 + relevance, f"{element.name}.{cls}"
+
+        return 1 + relevance, element.name
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _extract_relevant_html(self, html_content: str, action_hint: str) -> str:
+        """Strip noise and return interactive-element HTML only."""
+        try:
+            soup = BeautifulSoup(html_content, "html.parser")
+            for tag in soup(["script", "style", "noscript"]):
+                tag.decompose()
+
+            interactive = soup.find_all(
+                ["button", "a", "input", "textarea", "select", "form"]
+            )
+            parts = []
+            for elem in interactive[:50]:
+                # Send the element itself, not the parent, to avoid oversized/malformed HTML
+                parts.append(str(elem)[:300])
+            return "\n".join(parts)
+
+        except Exception:
+            logger.exception("HTML extraction error")
+            return html_content[:10000]
+
+    @staticmethod
+    def _clean_selector(raw: str) -> str:
+        """
+        Strip markdown fences, surrounding quotes, and extra lines from an
+        AI-generated selector string.
+        """
+        if "```" in raw:
+            parts = raw.split("```")
+            for i, part in enumerate(parts):
+                if i % 2 == 1:
+                    cleaned = part.strip()
+                    if "\n" in cleaned:
+                        cleaned = cleaned.split("\n", 1)[1].strip()
+                    if cleaned:
+                        raw = cleaned
+                        break
+
+        for line in raw.splitlines():
+            line = line.strip().strip("\"'")
+            if line:
+                return line.replace('"', "'")
+
+        return raw.strip().strip("\"'").replace('"', "'")
+
+    @staticmethod
+    def _is_valid_selector(selector: str) -> bool:
+        """Lightweight check that the selector string looks plausible."""
+        if not selector or len(selector) > 500:
+            return False
+        return bool(_VALID_SELECTOR_RE.match(selector))
+
+    def _record(
+        self,
+        failed: str,
+        healed: Optional[str],
+        action: str,
+        success: bool,
+    ) -> None:
+        self.healing_history.append(
+            {
+                "failed": failed,
+                "healed": healed,
+                "action": action,
+                "success": success,
+            }
+        )
